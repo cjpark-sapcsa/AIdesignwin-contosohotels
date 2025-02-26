@@ -12,7 +12,6 @@ using Microsoft.AspNetCore.Mvc;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -27,11 +26,9 @@ builder.Services.AddSingleton<IDatabaseService, DatabaseService>((_) =>
     return new DatabaseService(connectionString!);
 });
 
-
 // Create a single instance of the CosmosClient to be shared across the application.
 builder.Services.AddSingleton<CosmosClient>((_) =>
 {
-
     string userAssignedClientId = builder.Configuration["AZURE_CLIENT_ID"]!;
     var credential = new DefaultAzureCredential(
         new DefaultAzureCredentialOptions
@@ -76,25 +73,28 @@ app.MapGet("/", async () =>
     .WithOpenApi();
 
 // Retrieve the set of hotels from the database.
-app.MapGet("/Hotels", async () => 
+app.MapGet("/Hotels", async ([FromServices] IDatabaseService databaseService) => 
 {
-    throw new NotImplementedException();
+    var hotels = await databaseService.GetHotels();
+    return hotels;
 })
     .WithName("GetHotels")
     .WithOpenApi();
 
 // Retrieve the bookings for a specific hotel.
-app.MapGet("/Hotels/{hotelId}/Bookings/", async (int hotelId) => 
+app.MapGet("/Hotels/{hotelId}/Bookings/", async (int hotelId, [FromServices] IDatabaseService databaseService) => 
 {
-    throw new NotImplementedException();
+    var bookings = await databaseService.GetBookingsForHotel(hotelId);
+    return bookings;
 })
     .WithName("GetBookingsForHotel")
     .WithOpenApi();
 
 // Retrieve the bookings for a specific hotel that are after a specified date.
-app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime min_date) => 
+app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime min_date, [FromServices] IDatabaseService databaseService) => 
 {
-    throw new NotImplementedException();
+    var bookings = await databaseService.GetBookingsByHotelAndMinimumDate(hotelId, min_date);
+    return bookings;
 })
     .WithName("GetRecentBookingsForHotel")
     .WithOpenApi();
@@ -110,7 +110,6 @@ app.MapPost("/Chat", async Task<string> (HttpRequest request) =>
     .WithOpenApi();
 
 // This endpoint is used to vectorize a text string.
-// We will use this to generate embeddings for the maintenance request text.
 app.MapGet("/Vectorize", async (string text, [FromServices] IVectorizationService vectorizationService) =>
 {
     var embeddings = await vectorizationService.GetEmbeddings(text);
@@ -122,7 +121,6 @@ app.MapGet("/Vectorize", async (string text, [FromServices] IVectorizationServic
 // This endpoint is used to search for maintenance requests based on a vectorized query.
 app.MapPost("/VectorSearch", async ([FromBody] float[] queryVector, [FromServices] IVectorizationService vectorizationService, int max_results = 0, double minimum_similarity_score = 0.8) =>
 {
-    // Exercise 3 Task 3 TODO #3: Insert code to call the ExecuteVectorSearch function on the Vectorization Service. Don't forget to remove the NotImplementedException.
     throw new NotImplementedException();
 })
     .WithName("VectorSearch")
@@ -131,7 +129,6 @@ app.MapPost("/VectorSearch", async ([FromBody] float[] queryVector, [FromService
 // This endpoint is used to send a message to the Maintenance Copilot.
 app.MapPost("/MaintenanceCopilotChat", async ([FromBody]string message, [FromServices] MaintenanceCopilot copilot) =>
 {
-    // Exercise 5 Task 2 TODO #10: Insert code to call the Chat function on the MaintenanceCopilot. Don't forget to remove the NotImplementedException.
     throw new NotImplementedException();
 })
     .WithName("Copilot")
