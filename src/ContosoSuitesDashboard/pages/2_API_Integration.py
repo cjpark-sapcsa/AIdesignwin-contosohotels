@@ -3,26 +3,48 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
+def get_api_endpoint():
+    """Retrieve API endpoint and ensure it includes 'https://'"""
+    api_endpoint = st.secrets["api"]["endpoint"]
+    if not api_endpoint.startswith("http"):
+        api_endpoint = "https://" + api_endpoint
+    return api_endpoint
+
 @st.cache_data
 def get_hotels():
-    """Return a list of hotels from the API."""
-    api_endpoint = st.secrets["api"]["endpoint"]
-    response = requests.get(f"{api_endpoint}/Hotels", timeout=30)
-    return response
+    """Return a list of hotels from the API with error handling."""
+    api_endpoint = get_api_endpoint()
+    try:
+        response = requests.get(f"{api_endpoint}/Hotels", timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Failed to fetch hotels: {e}")
+        return []
 
 @st.cache_data
 def get_hotel_bookings(hotel_id):
-    """Return a list of bookings for the specified hotel."""
-    api_endpoint = st.secrets["api"]["endpoint"]
-    response = requests.get(f"{api_endpoint}/Hotels/{hotel_id}/Bookings", timeout=30)
-    return response
+    """Return a list of bookings for the specified hotel with error handling."""
+    api_endpoint = get_api_endpoint()
+    try:
+        response = requests.get(f"{api_endpoint}/Hotels/{hotel_id}/Bookings", timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Failed to fetch bookings for hotel {hotel_id}: {e}")
+        return []
 
 @st.cache_data
 def invoke_chat_endpoint(question):
-    """Invoke the chat endpoint with the specified question."""
-    api_endpoint = st.secrets["api"]["endpoint"]
-    response = requests.post(f"{api_endpoint}/Chat", data={"message": question}, timeout=30)
-    return response
+    """Invoke the chat endpoint with the specified question and handle errors."""
+    api_endpoint = get_api_endpoint()
+    try:
+        response = requests.post(f"{api_endpoint}/Chat", data={"message": question}, timeout=30)
+        response.raise_for_status()
+        return response.text
+    except requests.exceptions.RequestException as e:
+        st.error(f"Chat endpoint request failed: {e}")
+        return "Error processing request"
 
 def main():
     """Main function for the Chat with Data Streamlit app."""
@@ -39,20 +61,26 @@ def main():
     """
     )
 
-    # Display the list of hotels as a drop-down list
-    hotels_json = get_hotels().json()
-    # Reshape hotels to an object with hotelID and hotelName
+    # Fetch and display hotels
+    hotels_json = get_hotels()
+    if not hotels_json:
+        st.warning("No hotels found. Check API configuration.")
+        return
+
     hotels = [{"id": hotel["hotelID"], "name": hotel["hotelName"]} for hotel in hotels_json]
-    
     selected_hotel = st.selectbox("Hotel:", hotels, format_func=lambda x: x["name"])
 
-    # Display the list of bookings for the selected hotel as a table
+    # Fetch and display bookings if a hotel is selected
     if selected_hotel:
         hotel_id = selected_hotel["id"]
-        bookings = get_hotel_bookings(hotel_id).json()
-        st.write("### Bookings")
-        st.table(bookings)
+        bookings = get_hotel_bookings(hotel_id)
+        if bookings:
+            st.write("### Bookings")
+            st.table(bookings)
+        else:
+            st.warning("No bookings found for this hotel.")
 
+    # Chat input section
     st.write(
         """
         ## Ask a Bookings Question
@@ -66,8 +94,8 @@ def main():
     if st.button("Submit"):
         with st.spinner("Calling Chat endpoint..."):
             if question:
-                response = invoke_chat_endpoint(question)
-                st.write(response.text)
+                response_text = invoke_chat_endpoint(question)
+                st.write(response_text)
                 st.success("Chat endpoint called successfully.")
             else:
                 st.warning("Please enter a question.")
