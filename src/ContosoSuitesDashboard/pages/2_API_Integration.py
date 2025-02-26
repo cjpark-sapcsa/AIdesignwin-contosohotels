@@ -4,16 +4,22 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 def get_api_endpoint():
-    """Retrieve API endpoint and ensure it includes 'https://'"""
-    api_endpoint = st.secrets["api"]["endpoint"]
-    if not api_endpoint.startswith("http"):
-        api_endpoint = "https://" + api_endpoint
-    return api_endpoint
+    """Retrieve API endpoint and ensure it includes 'https://', handling possible errors."""
+    try:
+        api_endpoint = st.secrets["api"]["endpoint"].strip()
+        if not api_endpoint.startswith("http"):
+            api_endpoint = "https://" + api_endpoint.lstrip("/")
+        return api_endpoint
+    except KeyError:
+        st.error("API endpoint is missing in secrets.toml configuration.")
+        return ""
 
 @st.cache_data
 def get_hotels():
     """Return a list of hotels from the API with error handling."""
     api_endpoint = get_api_endpoint()
+    if not api_endpoint:
+        return []
     try:
         response = requests.get(f"{api_endpoint}/Hotels", timeout=30)
         response.raise_for_status()
@@ -26,6 +32,8 @@ def get_hotels():
 def get_hotel_bookings(hotel_id):
     """Return a list of bookings for the specified hotel with error handling."""
     api_endpoint = get_api_endpoint()
+    if not api_endpoint:
+        return []
     try:
         response = requests.get(f"{api_endpoint}/Hotels/{hotel_id}/Bookings", timeout=30)
         response.raise_for_status()
@@ -38,6 +46,8 @@ def get_hotel_bookings(hotel_id):
 def invoke_chat_endpoint(question):
     """Invoke the chat endpoint with the specified question and handle errors."""
     api_endpoint = get_api_endpoint()
+    if not api_endpoint:
+        return "Error processing request"
     try:
         response = requests.post(f"{api_endpoint}/Chat", data={"message": question}, timeout=30)
         response.raise_for_status()
