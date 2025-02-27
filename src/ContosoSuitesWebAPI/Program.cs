@@ -1,3 +1,6 @@
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
+using Microsoft.SemanticKernel.ChatCompletion;
 using Azure.Identity;
 using Microsoft.Azure.Cosmos;
 using ContosoSuitesWebAPI.Agents;
@@ -52,6 +55,26 @@ builder.Services.AddSingleton<AzureOpenAIClient>((_) =>
     return client;
 });
 
+// Use configuration builder to read user secrets and environment variables
+var config = new ConfigurationBuilder()
+    .AddUserSecrets<Program>()
+    .AddEnvironmentVariables()
+    .Build();
+
+// Add Semantic Kernel singleton
+builder.Services.AddSingleton<Kernel>((_) =>
+{
+    IKernelBuilder kernelBuilder = Kernel.CreateBuilder();
+    kernelBuilder.AddAzureOpenAIChatCompletion(
+        deploymentName: config["AzureOpenAI:DeploymentName"]!,
+        endpoint: config["AzureOpenAI:Endpoint"]!,
+        apiKey: config["AzureOpenAI:ApiKey"]!
+    );
+    var databaseService = _.GetRequiredService<IDatabaseService>();
+    kernelBuilder.Plugins.AddFromObject(databaseService);
+    return kernelBuilder.Build();
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -99,12 +122,18 @@ app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime
     .WithName("GetRecentBookingsForHotel")
     .WithOpenApi();
 
-// This endpoint is used to send a message to the Azure OpenAI endpoint.
+// Implement the /Chat POST request to handle chat messages using the Semantic Kernel
 app.MapPost("/Chat", async Task<string> (HttpRequest request) =>
 {
     var message = await Task.FromResult(request.Form["message"]);
-    
-    return "This endpoint is not yet available.";
+    var kernel = app.Services.GetRequiredService<Kernel>();
+    var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+    var executionSettings = new OpenAIPromptExecutionSettings
+    {
+        ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
+    };
+    var response = await chatCompletionService.GetChatMessageContentAsync(message.ToString(), executionSettings, kernel);
+    return response?.Content!;
 })
     .WithName("Chat")
     .WithOpenApi();
