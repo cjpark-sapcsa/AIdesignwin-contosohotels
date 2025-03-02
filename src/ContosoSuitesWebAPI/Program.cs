@@ -8,76 +8,93 @@ using ContosoSuitesWebAPI.Entities;
 using ContosoSuitesWebAPI.Plugins;
 using ContosoSuitesWebAPI.Services;
 using Microsoft.Data.SqlClient;
-using Azure.AI.OpenAI;
 using Azure;
+using Azure.Core;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+// ✅ Enable Logging for Debugging
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+
+var logger = builder.Services.BuildServiceProvider().GetRequiredService<ILogger<Program>>();
+logger.LogInformation("Application is starting...");
+
+// ✅ Register Services for Dependency Injection
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
-// Use dependency injection to inject services into the application.
 builder.Services.AddSingleton<IVectorizationService, VectorizationService>();
-builder.Services.AddSingleton<MaintenanceCopilot, MaintenanceCopilot>();
 
-// Create a single instance of the DatabaseService to be shared across the application.
-builder.Services.AddSingleton<IDatabaseService, DatabaseService>((_) => 
+// ✅ Configure DatabaseService
+builder.Services.AddSingleton<IDatabaseService, DatabaseService>((_) =>
 {
     var connectionString = builder.Configuration.GetConnectionString("ContosoSuites");
     return new DatabaseService(connectionString!);
 });
 
-// Create a single instance of the CosmosClient to be shared across the application.
+// ✅ Register CosmosClient with Managed Identity Authentication
 builder.Services.AddSingleton<CosmosClient>((_) =>
 {
+    string cosmosEndpoint = builder.Configuration["CosmosDB:AccountEndpoint"]!;
     string userAssignedClientId = builder.Configuration["AZURE_CLIENT_ID"]!;
-    var credential = new DefaultAzureCredential(
-        new DefaultAzureCredentialOptions
-        {
-            ManagedIdentityClientId = userAssignedClientId
-        });
-    CosmosClient client = new(
-        accountEndpoint: builder.Configuration["CosmosDB:AccountEndpoint"]!,
-        tokenCredential: credential
-    );
-    return client;
+
+    var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
+    {
+        TenantId = "16b3c013-d300-468d-ac64-7eda0820b6d3",
+        ManagedIdentityClientId = userAssignedClientId,
+        ExcludeVisualStudioCredential = true,
+        ExcludeVisualStudioCodeCredential = true,
+        ExcludeSharedTokenCacheCredential = true
+    });
+
+    var tokenRequestContext = new TokenRequestContext(new[] { "https://cosmos.azure.com/.default" });
+    var token = credential.GetTokenAsync(tokenRequestContext).Result;
+
+    logger.LogInformation("Successfully retrieved AAD Token for Cosmos DB: Expires at {ExpiresOn}", token.ExpiresOn);
+
+    return new CosmosClient(cosmosEndpoint, credential);
 });
 
-// Create a single instance of the AzureOpenAIClient to be shared across the application.
-builder.Services.AddSingleton<AzureOpenAIClient>((_) =>
+// ✅ Configure OpenAI Integration
+string? openAIEndpoint = builder.Configuration["AzureOpenAIEndpoint"];
+string? openAIKey = builder.Configuration["AzureOpenAIKey"];
+string? embeddingDeploymentName = builder.Configuration["EmbeddingDeploymentName"];
+
+if (string.IsNullOrWhiteSpace(openAIEndpoint) ||
+    string.IsNullOrWhiteSpace(openAIKey) ||
+    string.IsNullOrWhiteSpace(embeddingDeploymentName))
 {
-    var endpoint = new Uri(builder.Configuration["AzureOpenAI:Endpoint"]!);
-    var credentials = new AzureKeyCredential(builder.Configuration["AzureOpenAI:ApiKey"]!);
+    throw new Exception("OpenAI configuration is missing. Check AzureOpenAIEndpoint, AzureOpenAIKey, and EmbeddingDeploymentName.");
+}
 
-    var client = new AzureOpenAIClient(endpoint, credentials);
-    return client;
-});
-
-// Use configuration builder to read user secrets and environment variables
-var config = new ConfigurationBuilder()
-    .AddUserSecrets<Program>()
-    .AddEnvironmentVariables()
-    .Build();
-
-// Add Semantic Kernel singleton
-builder.Services.AddSingleton<Kernel>((_) =>
+// ✅ Register Semantic Kernel
+builder.Services.AddSingleton<Kernel>((serviceProvider) =>
 {
     IKernelBuilder kernelBuilder = Kernel.CreateBuilder();
     kernelBuilder.AddAzureOpenAIChatCompletion(
-        deploymentName: config["AzureOpenAI:DeploymentName"]!,
-        endpoint: config["AzureOpenAI:Endpoint"]!,
-        apiKey: config["AzureOpenAI:ApiKey"]!
+        deploymentName: embeddingDeploymentName,
+        endpoint: openAIEndpoint,
+        apiKey: openAIKey
     );
-    var databaseService = _.GetRequiredService<IDatabaseService>();
+
+#pragma warning disable SKEXP0010
+    kernelBuilder.AddAzureOpenAITextEmbeddingGeneration(
+        deploymentName: embeddingDeploymentName,
+        endpoint: openAIEndpoint,
+        apiKey: openAIKey
+    );
+#pragma warning restore SKEXP0010
+
+    var databaseService = serviceProvider.GetRequiredService<IDatabaseService>();
     kernelBuilder.Plugins.AddFromObject(databaseService);
+
     return kernelBuilder.Build();
 });
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -86,46 +103,65 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-/**** Endpoints ****/
-// This endpoint serves as the default landing page for the API.
-app.MapGet("/", async () => 
+// ✅ Fix: Ensure `VectorSearchRequest.cs` Exists
+app.MapPost("/VectorSearch", async (
+    [FromBody] VectorSearchRequest request,  
+    [FromServices] IVectorizationService vectorizationService) =>
 {
-    return "Welcome to the Contoso Suites Web API!";
+    logger.LogInformation("Received VectorSearch request with {Dimensions} dimensions.", request.QueryVector.Length);
+
+    if (request.QueryVector == null || request.QueryVector.Length == 0)
+    {
+        logger.LogError("Empty query vector received.");
+        return Results.BadRequest("Query vector is required.");
+    }
+
+    var results = await vectorizationService.ExecuteVectorSearch(
+        request.QueryVector, 
+        request.MaxResults, 
+        request.MinimumSimilarityScore
+    );
+
+    logger.LogInformation("Returning {ResultsCount} results.", results.Count);
+    return Results.Ok(results);
 })
+.WithName("VectorSearch")
+.WithOpenApi();
+
+// ✅ Other API Endpoints
+app.MapGet("/", () => "Welcome to the Contoso Suites Web API!")
     .WithName("Index")
     .WithOpenApi();
 
-// Retrieve the set of hotels from the database.
-app.MapGet("/Hotels", async ([FromServices] IDatabaseService databaseService) => 
+app.MapGet("/Hotels", async ([FromServices] IDatabaseService databaseService) =>
 {
-    var hotels = await databaseService.GetHotels();
-    return hotels;
+    return await databaseService.GetHotels();
 })
     .WithName("GetHotels")
     .WithOpenApi();
 
-// Retrieve the bookings for a specific hotel.
-app.MapGet("/Hotels/{hotelId}/Bookings/", async (int hotelId, [FromServices] IDatabaseService databaseService) => 
+app.MapGet("/Hotels/{hotelId}/Bookings/", async (int hotelId, [FromServices] IDatabaseService databaseService) =>
 {
-    var bookings = await databaseService.GetBookingsForHotel(hotelId);
-    return bookings;
+    return await databaseService.GetBookingsForHotel(hotelId);
 })
     .WithName("GetBookingsForHotel")
     .WithOpenApi();
 
-// Retrieve the bookings for a specific hotel that are after a specified date.
-app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime min_date, [FromServices] IDatabaseService databaseService) => 
+app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime min_date, [FromServices] IDatabaseService databaseService) =>
 {
-    var bookings = await databaseService.GetBookingsByHotelAndMinimumDate(hotelId, min_date);
-    return bookings;
+    return await databaseService.GetBookingsByHotelAndMinimumDate(hotelId, min_date);
 })
     .WithName("GetRecentBookingsForHotel")
     .WithOpenApi();
 
-// Implement the /Chat POST request to handle chat messages using the Semantic Kernel
-app.MapPost("/Chat", async Task<string> (HttpRequest request) =>
+app.MapPost("/Chat", async Task<string>(HttpRequest request) =>
 {
-    var message = await Task.FromResult(request.Form["message"]);
+    if (!request.HasFormContentType || !request.Form.ContainsKey("message"))
+    {
+        return "Bad Request: Message is required.";
+    }
+
+    var message = request.Form["message"];
     var kernel = app.Services.GetRequiredService<Kernel>();
     var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
     var executionSettings = new OpenAIPromptExecutionSettings
@@ -138,25 +174,14 @@ app.MapPost("/Chat", async Task<string> (HttpRequest request) =>
     .WithName("Chat")
     .WithOpenApi();
 
-// This endpoint is used to vectorize a text string.
 app.MapGet("/Vectorize", async (string text, [FromServices] IVectorizationService vectorizationService) =>
 {
-    var embeddings = await vectorizationService.GetEmbeddings(text);
-    return embeddings;
+    return await vectorizationService.GetEmbeddings(text);
 })
     .WithName("Vectorize")
     .WithOpenApi();
 
-// This endpoint is used to search for maintenance requests based on a vectorized query.
-app.MapPost("/VectorSearch", async ([FromBody] float[] queryVector, [FromServices] IVectorizationService vectorizationService, int max_results = 0, double minimum_similarity_score = 0.8) =>
-{
-    throw new NotImplementedException();
-})
-    .WithName("VectorSearch")
-    .WithOpenApi();
-
-// This endpoint is used to send a message to the Maintenance Copilot.
-app.MapPost("/MaintenanceCopilotChat", async ([FromBody]string message, [FromServices] MaintenanceCopilot copilot) =>
+app.MapPost("/MaintenanceCopilotChat", async ([FromBody] string message, [FromServices] MaintenanceCopilot copilot) =>
 {
     throw new NotImplementedException();
 })

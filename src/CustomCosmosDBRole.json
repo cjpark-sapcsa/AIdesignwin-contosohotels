@@ -1,0 +1,20 @@
+{
+    "RoleName": "Custom Cosmos DB Data Contributor",
+    "AssignableScopes": [
+        "/subscriptions/487a90a9-c58f-4edd-ae52-4e1a778f2781/resourceGroups/rg-aidesignwin-contosohotel/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-dshvsyq6ehvsa/dbs/ContosoSuites"
+    ],
+    "Permissions": [
+        {
+            "DataActions": [
+                "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/create",
+                "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/read",
+                "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/replace",
+                "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/delete",
+                "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeQuery",
+                "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/readChangeFeed",
+                "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeStoredProcedure"
+            ]
+        }
+    ]
+}
+
