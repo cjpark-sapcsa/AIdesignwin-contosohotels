@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import json
-import traceback  # ✅ Logs full error stack trace for error handling
+import traceback  # ✅ Logs full error stack trace for debugging
 
 # Suppress insecure HTTPS warnings for local dev/self-signed certs
 import urllib3
@@ -9,19 +9,22 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(layout="wide")
 
-# ✅ Ensure API endpoint has "https://"
+# ✅ Ensure API endpoint has "https://" and proper path prefix
 api_endpoint = st.secrets["api"]["endpoint"]
 if not api_endpoint.startswith("http"):
     api_endpoint = "https://" + api_endpoint  # Automatically fix missing scheme
 
+# ✅ Ensure the API base URL is correct (many APIs use `/api/` prefix)
+vectorize_url = f"{api_endpoint}/api/Vectorize"
+vector_search_url = f"{api_endpoint}/api/VectorSearch"
 
 def handle_query_vectorization(query: str) -> list[float]:
     """
-    Calls /Vectorize to convert the user's text query into a float vector.
+    Calls /api/Vectorize to convert the user's text query into a float vector.
     """
     try:
         response = requests.get(
-            f"{api_endpoint}/Vectorize",
+            vectorize_url,
             params={"text": query},
             timeout=30,
             verify=False
@@ -33,17 +36,21 @@ def handle_query_vectorization(query: str) -> list[float]:
         if isinstance(vector, list) and all(isinstance(x, (int, float)) for x in vector):
             return vector
         else:
-            st.error("❌ /Vectorize returned invalid format.")
+            st.error("❌ API Error: /Vectorize returned an invalid format.")
             return []
+    except requests.exceptions.Timeout:
+        st.error("🚨 Timeout Error: /Vectorize API took too long to respond.")
+    except requests.exceptions.ConnectionError:
+        st.error("🚨 Connection Error: Cannot reach the /Vectorize API.")
     except requests.exceptions.RequestException as e:
         st.error(f"🚨 API Error in /Vectorize: {str(e)}")
         traceback.print_exc()
-        return []
+    return []
 
 
 def handle_vector_search(query_vector_list: list[float], max_results: int, minimum_similarity_score: float):
     """
-    Calls /VectorSearch with the vectorized query.
+    Calls /api/VectorSearch with the vectorized query.
     """
     try:
         if not query_vector_list:
@@ -60,7 +67,7 @@ def handle_vector_search(query_vector_list: list[float], max_results: int, minim
         headers = {"Content-Type": "application/json"}
 
         response = requests.post(
-            f"{api_endpoint}/VectorSearch",
+            vector_search_url,
             json=payload,
             headers=headers,
             timeout=30,
@@ -73,12 +80,16 @@ def handle_vector_search(query_vector_list: list[float], max_results: int, minim
         if isinstance(data, list):
             return data
         else:
-            st.error("❌ /VectorSearch returned invalid format.")
+            st.error("❌ API Error: /VectorSearch returned an invalid format.")
             return None
+    except requests.exceptions.Timeout:
+        st.error("🚨 Timeout Error: /VectorSearch API took too long to respond.")
+    except requests.exceptions.ConnectionError:
+        st.error("🚨 Connection Error: Cannot reach the /VectorSearch API.")
     except requests.exceptions.RequestException as e:
         st.error(f"🚨 API Error in /VectorSearch: {str(e)}")
         traceback.print_exc()
-        return None
+    return None
 
 
 def main():

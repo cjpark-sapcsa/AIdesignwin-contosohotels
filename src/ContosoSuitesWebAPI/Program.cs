@@ -7,12 +7,10 @@ using ContosoSuitesWebAPI.Agents;
 using ContosoSuitesWebAPI.Entities;
 using ContosoSuitesWebAPI.Plugins;
 using ContosoSuitesWebAPI.Services;
-using Microsoft.Data.SqlClient;
-using Azure;
-using Azure.Core;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;  // ✅ Added missing namespace for JsonElement
+using Azure.Core;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,7 +18,6 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
-// ✅ Fix: Proper way to create logger without `BuildServiceProvider()`
 var loggerFactory = LoggerFactory.Create(logging => logging.AddConsole());
 var logger = loggerFactory.CreateLogger<Program>();
 
@@ -96,24 +93,8 @@ builder.Services.AddSingleton<Kernel>((serviceProvider) =>
     var databaseService = serviceProvider.GetRequiredService<IDatabaseService>();
     kernelBuilder.Plugins.AddFromObject(databaseService);
 
-    // ✅ Fix: Ensure `MaintenanceRequestPlugin` is properly registered
+    // ✅ Register `MaintenanceRequestPlugin`
     kernelBuilder.Plugins.AddFromType<MaintenanceRequestPlugin>("MaintenanceCopilot");
-
-    // ✅ Ensure CosmosClient is available within Kernel service definition
-    kernelBuilder.Services.AddSingleton<CosmosClient>((_) =>
-    {
-        string userAssignedClientId = builder.Configuration["AZURE_CLIENT_ID"]!;
-        var credential = new DefaultAzureCredential(
-            new DefaultAzureCredentialOptions
-            {
-                ManagedIdentityClientId = userAssignedClientId
-            });
-        CosmosClient client = new(
-            accountEndpoint: builder.Configuration["CosmosDB:AccountEndpoint"]!,
-            tokenCredential: credential
-        );
-        return client;
-    });
 
     return kernelBuilder.Build();
 });
@@ -128,8 +109,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// ✅ Fix: Ensure VectorSearchRequest.cs Exists
-app.MapPost("/VectorSearch", async (
+// ✅ Fix: Ensure `/api/VectorSearch` Exists
+app.MapPost("/api/VectorSearch", async (
     [FromBody] VectorSearchRequest request,  
     [FromServices] IVectorizationService vectorizationService) =>
 {
@@ -153,33 +134,42 @@ app.MapPost("/VectorSearch", async (
 .WithName("VectorSearch")
 .WithOpenApi();
 
-// ✅ Other API Endpoints
-app.MapGet("/", () => "Welcome to the Contoso Suites Web API!")
-    .WithName("Index")
-    .WithOpenApi();
-
-app.MapGet("/Hotels", async ([FromServices] IDatabaseService databaseService) =>
+// ✅ Fix: Ensure `/api/Vectorize` Exists
+app.MapGet("/api/Vectorize", async (string text, [FromServices] IVectorizationService vectorizationService) =>
 {
+    logger.LogInformation("Processing vectorization for text: {text}", text);
+    return await vectorizationService.GetEmbeddings(text);
+})
+.WithName("Vectorize")
+.WithOpenApi();
+
+// ✅ Fix: Ensure `/api/Hotels` Exists
+app.MapGet("/api/Hotels", async ([FromServices] IDatabaseService databaseService) =>
+{
+    logger.LogInformation("Fetching hotel list...");
     return await databaseService.GetHotels();
 })
-    .WithName("GetHotels")
-    .WithOpenApi();
+.WithName("GetHotels")
+.WithOpenApi();
 
-app.MapGet("/Hotels/{hotelId}/Bookings/", async (int hotelId, [FromServices] IDatabaseService databaseService) =>
+// ✅ Fix: Ensure `/api/Hotels/{hotelId}/Bookings/` Exists
+app.MapGet("/api/Hotels/{hotelId}/Bookings/", async (int hotelId, [FromServices] IDatabaseService databaseService) =>
 {
     return await databaseService.GetBookingsForHotel(hotelId);
 })
-    .WithName("GetBookingsForHotel")
-    .WithOpenApi();
+.WithName("GetBookingsForHotel")
+.WithOpenApi();
 
-app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime min_date, [FromServices] IDatabaseService databaseService) =>
+// ✅ Fix: Ensure `/api/Hotels/{hotelId}/Bookings/{min_date}` Exists
+app.MapGet("/api/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime min_date, [FromServices] IDatabaseService databaseService) =>
 {
     return await databaseService.GetBookingsByHotelAndMinimumDate(hotelId, min_date);
 })
-    .WithName("GetRecentBookingsForHotel")
-    .WithOpenApi();
+.WithName("GetRecentBookingsForHotel")
+.WithOpenApi();
 
-app.MapPost("/Chat", async Task<string>(HttpRequest request) =>
+// ✅ Fix: Ensure `/api/Chat` Exists
+app.MapPost("/api/Chat", async Task<string>(HttpRequest request) =>
 {
     if (!request.HasFormContentType || !request.Form.ContainsKey("message"))
     {
@@ -196,17 +186,11 @@ app.MapPost("/Chat", async Task<string>(HttpRequest request) =>
     var response = await chatCompletionService.GetChatMessageContentAsync(message.ToString(), executionSettings, kernel);
     return response?.Content!;
 })
-    .WithName("Chat")
-    .WithOpenApi();
+.WithName("Chat")
+.WithOpenApi();
 
-app.MapGet("/Vectorize", async (string text, [FromServices] IVectorizationService vectorizationService) =>
-{
-    return await vectorizationService.GetEmbeddings(text);
-})
-    .WithName("Vectorize")
-    .WithOpenApi();
-
-app.MapPost("/MaintenanceCopilotChat", async ([FromBody] JsonElement body, [FromServices] MaintenanceCopilot copilot) =>
+// ✅ Fix: Ensure `/api/MaintenanceCopilotChat` Exists
+app.MapPost("/api/MaintenanceCopilotChat", async ([FromBody] JsonElement body, [FromServices] MaintenanceCopilot copilot) =>
 {
     if (!body.TryGetProperty("message", out var messageElement) || messageElement.ValueKind != JsonValueKind.String)
     {
@@ -217,7 +201,7 @@ app.MapPost("/MaintenanceCopilotChat", async ([FromBody] JsonElement body, [From
     var response = await copilot.Chat(message);
     return Results.Ok(response);
 })
-    .WithName("Copilot")
-    .WithOpenApi();
+.WithName("Copilot")
+.WithOpenApi();
 
 app.Run();
