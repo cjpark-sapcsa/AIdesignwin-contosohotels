@@ -9,8 +9,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(layout="wide")
 
-# ✅ API Endpoint from Streamlit Secrets
+# ✅ Ensure API endpoint has "https://"
 api_endpoint = st.secrets["api"]["endpoint"]
+if not api_endpoint.startswith("http"):
+    api_endpoint = "https://" + api_endpoint  # Automatically fix missing scheme
+
 
 def handle_query_vectorization(query: str) -> list[float]:
     """
@@ -24,20 +27,19 @@ def handle_query_vectorization(query: str) -> list[float]:
             verify=False
         )
 
-        if response.status_code == 200:
-            vector = response.json()
-            if isinstance(vector, list) and all(isinstance(x, (int, float)) for x in vector):
-                return vector
-            else:
-                st.error("❌ /Vectorize returned invalid format.")
-                return []
+        response.raise_for_status()  # Raise an exception for non-200 responses
+
+        vector = response.json()
+        if isinstance(vector, list) and all(isinstance(x, (int, float)) for x in vector):
+            return vector
         else:
-            st.error(f"❌ /Vectorize failed: {response.status_code}")
+            st.error("❌ /Vectorize returned invalid format.")
             return []
     except requests.exceptions.RequestException as e:
-        st.error("🚨 API Error in /Vectorize")
+        st.error(f"🚨 API Error in /Vectorize: {str(e)}")
         traceback.print_exc()
         return []
+
 
 def handle_vector_search(query_vector_list: list[float], max_results: int, minimum_similarity_score: float):
     """
@@ -65,55 +67,55 @@ def handle_vector_search(query_vector_list: list[float], max_results: int, minim
             verify=False
         )
 
-        if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, list):
-                return data
-            else:
-                st.error("❌ /VectorSearch returned invalid format.")
-                return None
+        response.raise_for_status()  # Raise an exception for non-200 responses
+
+        data = response.json()
+        if isinstance(data, list):
+            return data
         else:
-            st.error(f"❌ /VectorSearch failed: {response.status_code}")
+            st.error("❌ /VectorSearch returned invalid format.")
             return None
     except requests.exceptions.RequestException as e:
-        st.error("🚨 API Error in /VectorSearch")
+        st.error(f"🚨 API Error in /VectorSearch: {str(e)}")
         traceback.print_exc()
         return None
+
 
 def main():
     """
     Streamlit page for demonstrating vector search over maintenance requests.
     """
-    st.title("Vector Search for Maintenance Requests")
+    st.title("🔍 Vector Search for Maintenance Requests")
 
     st.write(
         """
-        1. Enter a search query describing a maintenance issue.
-        2. Click "Submit" to vectorize your query and perform a vector search.
-        3. The API returns matching maintenance requests with similarity scores.
+        ## How It Works:
+        1️⃣ Enter a search query describing a maintenance issue.  
+        2️⃣ Click **"Submit"** to convert the query into a vector.  
+        3️⃣ The API will return **similar maintenance requests** with similarity scores.  
         """
     )
 
     col1, col2 = st.columns(2)
     with col1:
-        query = st.text_input("Search query:", key="query", value="")
+        query = st.text_input("🔎 Enter Search Query:", key="query", value="")
     with col2:
-        max_results = st.number_input("Max results (<=0 => all):", min_value=0, value=5)
+        max_results = st.number_input("📊 Max results (0 = all):", min_value=0, value=5)
 
     minimum_similarity_score = st.slider(
-        "Minimum Similarity Score:",
+        "📏 Minimum Similarity Score:",
         min_value=0.0,
         max_value=1.0,
         value=0.8,  # ✅ Reset to production value
         step=0.01
     )
 
-    if st.button("Submit"):
+    if st.button("🚀 Submit"):
         if not query.strip():
-            st.warning("Please enter a valid query.")
+            st.warning("⚠️ Please enter a valid query.")
             return
 
-        with st.spinner("Performing vector search..."):
+        with st.spinner("🔄 Performing vector search..."):
             try:
                 # ✅ Step 1: Convert query to vector
                 query_vector_list = handle_query_vectorization(query)
@@ -127,13 +129,14 @@ def main():
 
                 # ✅ Step 3: Display results
                 if results:
-                    st.write("## Search Results")
+                    st.write("## 🎯 Search Results")
                     st.table(results)
                 else:
                     st.error("🚨 No results returned from /VectorSearch.")
             except Exception as e:
-                st.error("🚨 Unexpected error occurred.")
+                st.error(f"🚨 Unexpected error: {str(e)}")
                 traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()
