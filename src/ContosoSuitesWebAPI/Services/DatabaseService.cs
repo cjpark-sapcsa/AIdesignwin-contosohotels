@@ -16,7 +16,7 @@ public class DatabaseService(string connectionString) : IDatabaseService
     /// <summary>
     /// Get all hotels from the database.
     /// </summary>
-    [KernelFunction]
+    [KernelFunction("get_hotels")]
     [Description("Get all hotels.")]
     public async Task<IEnumerable<Hotel>> GetHotels()
     {
@@ -37,7 +37,6 @@ public class DatabaseService(string connectionString) : IDatabaseService
             });
         }
         conn.Close();
-
         return hotels;
     }
 
@@ -47,8 +46,7 @@ public class DatabaseService(string connectionString) : IDatabaseService
     [KernelFunction]
     [Description("Get all bookings for a single hotel.")]
     public async Task<IEnumerable<Booking>> GetBookingsForHotel(
-        [Description("The ID of the hotel")] int hotelId
-    )
+        [Description("The ID of the hotel")] int hotelId)
     {
         var sql = "SELECT BookingID, CustomerID, HotelID, StayBeginDate, StayEndDate, NumberOfGuests FROM dbo.Booking WHERE HotelID = @HotelID";
         using var conn = new SqlConnection(connectionString!);
@@ -70,7 +68,6 @@ public class DatabaseService(string connectionString) : IDatabaseService
             });
         }
         conn.Close();
-
         return bookings;
     }
 
@@ -81,8 +78,7 @@ public class DatabaseService(string connectionString) : IDatabaseService
     [Description("Get all bookings for a hotel after a specified date.")]
     public async Task<IEnumerable<Booking>> GetBookingsByHotelAndMinimumDate(
         [Description("The ID of the hotel")] int hotelId,
-        [Description("The minimum stay begin date for the bookings")] DateTime dt
-    )
+        [Description("The minimum stay begin date for the bookings")] DateTime dt)
     {
         var sql = "SELECT BookingID, CustomerID, HotelID, StayBeginDate, StayEndDate, NumberOfGuests FROM dbo.Booking WHERE HotelID = @HotelID AND StayBeginDate >= @StayBeginDate";
         using var conn = new SqlConnection(connectionString!);
@@ -105,7 +101,6 @@ public class DatabaseService(string connectionString) : IDatabaseService
             });
         }
         conn.Close();
-
         return bookings;
     }
 
@@ -117,21 +112,9 @@ public class DatabaseService(string connectionString) : IDatabaseService
     public async Task<IEnumerable<Booking>> GetBookingsMissingHotelRooms()
     {
         var sql = """
-            SELECT
-                b.BookingID,
-                b.CustomerID,
-                b.HotelID,
-                b.StayBeginDate,
-                b.StayEndDate,
-                b.NumberOfGuests
+            SELECT b.BookingID, b.CustomerID, b.HotelID, b.StayBeginDate, b.StayEndDate, b.NumberOfGuests
             FROM dbo.Booking b
-            WHERE NOT EXISTS
-                (
-                    SELECT 1
-                    FROM dbo.BookingHotelRoom h
-                    WHERE
-                        b.BookingID = h.BookingID
-                );
+            WHERE NOT EXISTS (SELECT 1 FROM dbo.BookingHotelRoom h WHERE b.BookingID = h.BookingID);
             """;
         using var conn = new SqlConnection(connectionString!);
         conn.Open();
@@ -151,7 +134,6 @@ public class DatabaseService(string connectionString) : IDatabaseService
             });
         }
         conn.Close();
-
         return bookings;
     }
 
@@ -163,21 +145,9 @@ public class DatabaseService(string connectionString) : IDatabaseService
     public async Task<IEnumerable<Booking>> GetBookingsWithMultipleHotelRooms()
     {
         var sql = """
-            SELECT
-                b.BookingID,
-                b.CustomerID,
-                b.HotelID,
-                b.StayBeginDate,
-                b.StayEndDate,
-                b.NumberOfGuests
+            SELECT b.BookingID, b.CustomerID, b.HotelID, b.StayBeginDate, b.StayEndDate, b.NumberOfGuests
             FROM dbo.Booking b
-            WHERE
-                (
-                    SELECT COUNT(1)
-                    FROM dbo.BookingHotelRoom h
-                    WHERE
-                        b.BookingID = h.BookingID
-                ) > 1;
+            WHERE (SELECT COUNT(1) FROM dbo.BookingHotelRoom h WHERE b.BookingID = h.BookingID) > 1;
             """;
         using var conn = new SqlConnection(connectionString!);
         conn.Open();
@@ -197,7 +167,6 @@ public class DatabaseService(string connectionString) : IDatabaseService
             });
         }
         conn.Close();
-
         return bookings;
     }
 }

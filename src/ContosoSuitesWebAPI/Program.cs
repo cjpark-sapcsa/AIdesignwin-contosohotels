@@ -12,6 +12,7 @@ using Azure;
 using Azure.Core;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -60,21 +61,24 @@ builder.Services.AddSingleton<CosmosClient>((_) =>
 // ✅ Configure OpenAI Integration
 string? openAIEndpoint = builder.Configuration["AzureOpenAIEndpoint"];
 string? openAIKey = builder.Configuration["AzureOpenAIKey"];
+string? chatModelName = builder.Configuration["deployment_name"];
 string? embeddingDeploymentName = builder.Configuration["EmbeddingDeploymentName"];
 
 if (string.IsNullOrWhiteSpace(openAIEndpoint) ||
     string.IsNullOrWhiteSpace(openAIKey) ||
+    string.IsNullOrWhiteSpace(chatModelName) ||
     string.IsNullOrWhiteSpace(embeddingDeploymentName))
 {
-    throw new Exception("OpenAI configuration is missing. Check AzureOpenAIEndpoint, AzureOpenAIKey, and EmbeddingDeploymentName.");
+    throw new Exception("OpenAI configuration is missing. Check AzureOpenAIEndpoint, AzureOpenAIKey, deployment_name, and EmbeddingDeploymentName.");
 }
 
-// ✅ Register Semantic Kernel
+// ✅ Register Semantic Kernel with Correct Models
 builder.Services.AddSingleton<Kernel>((serviceProvider) =>
 {
     IKernelBuilder kernelBuilder = Kernel.CreateBuilder();
+
     kernelBuilder.AddAzureOpenAIChatCompletion(
-        deploymentName: embeddingDeploymentName,
+        deploymentName: chatModelName,
         endpoint: openAIEndpoint,
         apiKey: openAIKey
     );
@@ -90,8 +94,30 @@ builder.Services.AddSingleton<Kernel>((serviceProvider) =>
     var databaseService = serviceProvider.GetRequiredService<IDatabaseService>();
     kernelBuilder.Plugins.AddFromObject(databaseService);
 
+    // ✅ Add MaintenanceRequestPlugin
+    kernelBuilder.Plugins.AddFromType<MaintenanceRequestPlugin>("MaintenanceCopilot");
+
+    // ✅ Ensure CosmosClient is available within Kernel service definition
+    kernelBuilder.Services.AddSingleton<CosmosClient>((_) =>
+    {
+        string userAssignedClientId = builder.Configuration["AZURE_CLIENT_ID"]!;
+        var credential = new DefaultAzureCredential(
+            new DefaultAzureCredentialOptions
+            {
+                ManagedIdentityClientId = userAssignedClientId
+            });
+        CosmosClient client = new(
+            accountEndpoint: builder.Configuration["CosmosDB:AccountEndpoint"]!,
+            tokenCredential: credential
+        );
+        return client;
+    });
+
     return kernelBuilder.Build();
 });
+
+// ✅ Register MaintenanceCopilot
+builder.Services.AddSingleton<MaintenanceCopilot>();
 
 var app = builder.Build();
 
@@ -103,7 +129,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// ✅ Fix: Ensure `VectorSearchRequest.cs` Exists
+// ✅ Define API Endpoints
 app.MapPost("/VectorSearch", async (
     [FromBody] VectorSearchRequest request,  
     [FromServices] IVectorizationService vectorizationService) =>
@@ -128,64 +154,18 @@ app.MapPost("/VectorSearch", async (
 .WithName("VectorSearch")
 .WithOpenApi();
 
-// ✅ Other API Endpoints
-app.MapGet("/", () => "Welcome to the Contoso Suites Web API!")
-    .WithName("Index")
-    .WithOpenApi();
-
-app.MapGet("/Hotels", async ([FromServices] IDatabaseService databaseService) =>
+app.MapPost("/MaintenanceCopilotChat", async ([FromBody] JsonElement body, [FromServices] MaintenanceCopilot copilot) =>
 {
-    return await databaseService.GetHotels();
-})
-    .WithName("GetHotels")
-    .WithOpenApi();
-
-app.MapGet("/Hotels/{hotelId}/Bookings/", async (int hotelId, [FromServices] IDatabaseService databaseService) =>
-{
-    return await databaseService.GetBookingsForHotel(hotelId);
-})
-    .WithName("GetBookingsForHotel")
-    .WithOpenApi();
-
-app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime min_date, [FromServices] IDatabaseService databaseService) =>
-{
-    return await databaseService.GetBookingsByHotelAndMinimumDate(hotelId, min_date);
-})
-    .WithName("GetRecentBookingsForHotel")
-    .WithOpenApi();
-
-app.MapPost("/Chat", async Task<string>(HttpRequest request) =>
-{
-    if (!request.HasFormContentType || !request.Form.ContainsKey("message"))
+    if (!body.TryGetProperty("message", out var messageElement) || messageElement.ValueKind != JsonValueKind.String)
     {
-        return "Bad Request: Message is required.";
+        return Results.BadRequest("Invalid request format. Expected JSON: { \"message\": \"your text here\" }");
     }
 
-    var message = request.Form["message"];
-    var kernel = app.Services.GetRequiredService<Kernel>();
-    var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
-    var executionSettings = new OpenAIPromptExecutionSettings
-    {
-        ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
-    };
-    var response = await chatCompletionService.GetChatMessageContentAsync(message.ToString(), executionSettings, kernel);
-    return response?.Content!;
+    string message = messageElement.GetString()!;
+    var response = await copilot.Chat(message);
+    return Results.Ok(response);
 })
-    .WithName("Chat")
-    .WithOpenApi();
-
-app.MapGet("/Vectorize", async (string text, [FromServices] IVectorizationService vectorizationService) =>
-{
-    return await vectorizationService.GetEmbeddings(text);
-})
-    .WithName("Vectorize")
-    .WithOpenApi();
-
-app.MapPost("/MaintenanceCopilotChat", async ([FromBody] string message, [FromServices] MaintenanceCopilot copilot) =>
-{
-    throw new NotImplementedException();
-})
-    .WithName("Copilot")
-    .WithOpenApi();
+.WithName("Copilot")
+.WithOpenApi();
 
 app.Run();
