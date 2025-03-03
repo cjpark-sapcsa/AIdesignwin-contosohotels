@@ -12,7 +12,7 @@ using Azure;
 using Azure.Core;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using System.Text.Json;
+using System.Text.Json;  // ✅ Added missing namespace for JsonElement
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,7 +20,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
-var logger = builder.Services.BuildServiceProvider().GetRequiredService<ILogger<Program>>();
+// ✅ Fix: Proper way to create logger without `BuildServiceProvider()`
+var loggerFactory = LoggerFactory.Create(logging => logging.AddConsole());
+var logger = loggerFactory.CreateLogger<Program>();
+
 logger.LogInformation("Application is starting...");
 
 // ✅ Register Services for Dependency Injection
@@ -43,7 +46,6 @@ builder.Services.AddSingleton<CosmosClient>((_) =>
 
     var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
     {
-        TenantId = "16b3c013-d300-468d-ac64-7eda0820b6d3",
         ManagedIdentityClientId = userAssignedClientId,
         ExcludeVisualStudioCredential = true,
         ExcludeVisualStudioCodeCredential = true,
@@ -94,7 +96,7 @@ builder.Services.AddSingleton<Kernel>((serviceProvider) =>
     var databaseService = serviceProvider.GetRequiredService<IDatabaseService>();
     kernelBuilder.Plugins.AddFromObject(databaseService);
 
-    // ✅ Add MaintenanceRequestPlugin
+    // ✅ Fix: Ensure `MaintenanceRequestPlugin` is properly registered
     kernelBuilder.Plugins.AddFromType<MaintenanceRequestPlugin>("MaintenanceCopilot");
 
     // ✅ Ensure CosmosClient is available within Kernel service definition
@@ -116,9 +118,6 @@ builder.Services.AddSingleton<Kernel>((serviceProvider) =>
     return kernelBuilder.Build();
 });
 
-// ✅ Register MaintenanceCopilot
-builder.Services.AddSingleton<MaintenanceCopilot>();
-
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -129,7 +128,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// ✅ Define API Endpoints
+// ✅ Fix: Ensure VectorSearchRequest.cs Exists
 app.MapPost("/VectorSearch", async (
     [FromBody] VectorSearchRequest request,  
     [FromServices] IVectorizationService vectorizationService) =>
@@ -154,6 +153,59 @@ app.MapPost("/VectorSearch", async (
 .WithName("VectorSearch")
 .WithOpenApi();
 
+// ✅ Other API Endpoints
+app.MapGet("/", () => "Welcome to the Contoso Suites Web API!")
+    .WithName("Index")
+    .WithOpenApi();
+
+app.MapGet("/Hotels", async ([FromServices] IDatabaseService databaseService) =>
+{
+    return await databaseService.GetHotels();
+})
+    .WithName("GetHotels")
+    .WithOpenApi();
+
+app.MapGet("/Hotels/{hotelId}/Bookings/", async (int hotelId, [FromServices] IDatabaseService databaseService) =>
+{
+    return await databaseService.GetBookingsForHotel(hotelId);
+})
+    .WithName("GetBookingsForHotel")
+    .WithOpenApi();
+
+app.MapGet("/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, DateTime min_date, [FromServices] IDatabaseService databaseService) =>
+{
+    return await databaseService.GetBookingsByHotelAndMinimumDate(hotelId, min_date);
+})
+    .WithName("GetRecentBookingsForHotel")
+    .WithOpenApi();
+
+app.MapPost("/Chat", async Task<string>(HttpRequest request) =>
+{
+    if (!request.HasFormContentType || !request.Form.ContainsKey("message"))
+    {
+        return "Bad Request: Message is required.";
+    }
+
+    var message = request.Form["message"];
+    var kernel = app.Services.GetRequiredService<Kernel>();
+    var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+    var executionSettings = new OpenAIPromptExecutionSettings
+    {
+        ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
+    };
+    var response = await chatCompletionService.GetChatMessageContentAsync(message.ToString(), executionSettings, kernel);
+    return response?.Content!;
+})
+    .WithName("Chat")
+    .WithOpenApi();
+
+app.MapGet("/Vectorize", async (string text, [FromServices] IVectorizationService vectorizationService) =>
+{
+    return await vectorizationService.GetEmbeddings(text);
+})
+    .WithName("Vectorize")
+    .WithOpenApi();
+
 app.MapPost("/MaintenanceCopilotChat", async ([FromBody] JsonElement body, [FromServices] MaintenanceCopilot copilot) =>
 {
     if (!body.TryGetProperty("message", out var messageElement) || messageElement.ValueKind != JsonValueKind.String)
@@ -165,7 +217,7 @@ app.MapPost("/MaintenanceCopilotChat", async ([FromBody] JsonElement body, [From
     var response = await copilot.Chat(message);
     return Results.Ok(response);
 })
-.WithName("Copilot")
-.WithOpenApi();
+    .WithName("Copilot")
+    .WithOpenApi();
 
 app.Run();
