@@ -9,7 +9,7 @@ using ContosoSuitesWebAPI.Plugins;
 using ContosoSuitesWebAPI.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using System.Text.Json;  // ✅ Added missing namespace for JsonElement
+using System.Text.Json;  
 using Azure.Core;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -28,18 +28,12 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddSingleton<IVectorizationService, VectorizationService>();
 
-// ✅ Configure DatabaseService
-builder.Services.AddSingleton<IDatabaseService, DatabaseService>((_) =>
+// ✅ Register CosmosClient FIRST before any dependent services
+builder.Services.AddSingleton<CosmosClient>((serviceProvider) =>
 {
-    var connectionString = builder.Configuration.GetConnectionString("ContosoSuites");
-    return new DatabaseService(connectionString!);
-});
-
-// ✅ Register CosmosClient with Managed Identity Authentication
-builder.Services.AddSingleton<CosmosClient>((_) =>
-{
-    string cosmosEndpoint = builder.Configuration["CosmosDB:AccountEndpoint"]!;
-    string userAssignedClientId = builder.Configuration["AZURE_CLIENT_ID"]!;
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    string cosmosEndpoint = configuration["CosmosDB:AccountEndpoint"] ?? throw new InvalidOperationException("Missing CosmosDB:AccountEndpoint in configuration.");
+    string userAssignedClientId = configuration["AZURE_CLIENT_ID"] ?? throw new InvalidOperationException("Missing AZURE_CLIENT_ID in configuration.");
 
     var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
     {
@@ -55,6 +49,21 @@ builder.Services.AddSingleton<CosmosClient>((_) =>
     logger.LogInformation("Successfully retrieved AAD Token for Cosmos DB: Expires at {ExpiresOn}", token.ExpiresOn);
 
     return new CosmosClient(cosmosEndpoint, credential);
+});
+
+// ✅ Register DatabaseService AFTER CosmosClient
+builder.Services.AddSingleton<IDatabaseService, DatabaseService>((serviceProvider) =>
+{
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var connectionString = configuration.GetConnectionString("ContosoSuites") ?? throw new InvalidOperationException("Missing ContosoSuites connection string.");
+    return new DatabaseService(connectionString);
+});
+
+// ✅ Register `MaintenanceRequestPlugin` AFTER CosmosClient so it resolves properly
+builder.Services.AddSingleton<MaintenanceRequestPlugin>((serviceProvider) =>
+{
+    var cosmosClient = serviceProvider.GetRequiredService<CosmosClient>();
+    return new MaintenanceRequestPlugin(cosmosClient);
 });
 
 // ✅ Configure OpenAI Integration
@@ -93,10 +102,18 @@ builder.Services.AddSingleton<Kernel>((serviceProvider) =>
     var databaseService = serviceProvider.GetRequiredService<IDatabaseService>();
     kernelBuilder.Plugins.AddFromObject(databaseService);
 
-    // ✅ Register `MaintenanceRequestPlugin`
-    kernelBuilder.Plugins.AddFromType<MaintenanceRequestPlugin>("MaintenanceCopilot");
+    // ✅ Ensure `MaintenanceRequestPlugin` is registered correctly
+    var maintenancePlugin = serviceProvider.GetRequiredService<MaintenanceRequestPlugin>();
+    kernelBuilder.Plugins.AddFromObject(maintenancePlugin);
 
     return kernelBuilder.Build();
+});
+
+// ✅ Register `MaintenanceCopilot`
+builder.Services.AddSingleton<MaintenanceCopilot>((serviceProvider) =>
+{
+    var kernel = serviceProvider.GetRequiredService<Kernel>();
+    return new MaintenanceCopilot(kernel);
 });
 
 var app = builder.Build();
@@ -169,22 +186,24 @@ app.MapGet("/api/Hotels/{hotelId}/Bookings/{min_date}", async (int hotelId, Date
 .WithOpenApi();
 
 // ✅ Fix: Ensure `/api/Chat` Exists
-app.MapPost("/api/Chat", async Task<string>(HttpRequest request) =>
+app.MapPost("/api/Chat", async ([FromBody] JsonElement body, [FromServices] Kernel kernel) =>
 {
-    if (!request.HasFormContentType || !request.Form.ContainsKey("message"))
+    if (!body.TryGetProperty("message", out var messageElement) || messageElement.ValueKind != JsonValueKind.String)
     {
-        return "Bad Request: Message is required.";
+        return Results.BadRequest(new { error = "Message is required." });
     }
 
-    var message = request.Form["message"];
-    var kernel = app.Services.GetRequiredService<Kernel>();
+    string message = messageElement.GetString()!;
     var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+
     var executionSettings = new OpenAIPromptExecutionSettings
     {
         ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
     };
-    var response = await chatCompletionService.GetChatMessageContentAsync(message.ToString(), executionSettings, kernel);
-    return response?.Content!;
+
+    var response = await chatCompletionService.GetChatMessageContentAsync(message, executionSettings, kernel);
+    
+    return Results.Ok(new { message = response?.Content ?? "No response received." });
 })
 .WithName("Chat")
 .WithOpenApi();

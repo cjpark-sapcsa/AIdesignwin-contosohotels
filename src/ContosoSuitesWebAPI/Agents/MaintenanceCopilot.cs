@@ -1,6 +1,8 @@
 ﻿using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace ContosoSuitesWebAPI.Agents
 {
@@ -9,19 +11,22 @@ namespace ContosoSuitesWebAPI.Agents
     /// </summary>
     public class MaintenanceCopilot
     {
-        // Inject the Kernel service into the MaintenanceCopilot class.
         private readonly Kernel _kernel;
-        private ChatHistory _history = new ChatHistory(@"""
-            You are a friendly assistant who likes to follow the rules. You will complete required steps
-            and request approval before taking any consequential actions, such as saving the request to the database.
-            If the user doesn't provide enough information for you to complete a task, you will keep asking questions
-            until you have enough information to complete the task. Once the request has been saved to the database,
-            inform the user that hotel maintenance has been notified and will address the issue as soon as possible.
-            """);
+        private readonly IChatCompletionService _chatCompletionService;
+        private readonly ChatHistory _history; // ✅ Use `ChatHistory` instead of List<ChatMessageContent>
 
         public MaintenanceCopilot(Kernel kernel)
         {
             _kernel = kernel;
+            _chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+
+            // ✅ Properly initialize ChatHistory (not List<ChatMessageContent>)
+            _history = new ChatHistory("""
+                You are a hotel maintenance copilot. Your job is to help customer service agents log maintenance requests.
+                When the user provides an issue description, gather details like room number and hotel name.
+                Ensure all necessary details are collected before submitting the request.
+                Inform the user once the maintenance request has been logged in the system.
+            """);
         }
 
         /// <summary>
@@ -29,28 +34,33 @@ namespace ContosoSuitesWebAPI.Agents
         /// </summary>
         public async Task<string> Chat(string userPrompt)
         {
-            // Get the chat completion service from the kernel.
-            var chatCompletionService = _kernel.GetRequiredService<IChatCompletionService>();
-
-            var openAIPromptExecutionSettings = new OpenAIPromptExecutionSettings()
+            try
             {
-                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
-            };
+                // ✅ Add user message to chat history correctly
+                _history.AddUserMessage(userPrompt);
 
-            // Add the user's message to the chat history.
-            _history.AddUserMessage(userPrompt);
+                var executionSettings = new OpenAIPromptExecutionSettings
+                {
+                    ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions  // ✅ Ensure AI can call functions
+                };
 
-            // Generate response from AI using chat completion service.
-            var result = await chatCompletionService.GetChatMessageContentAsync(
-                _history,
-                executionSettings: openAIPromptExecutionSettings,
-                _kernel
-            );
+                // ✅ Generate AI response using `ChatHistory`
+                var response = await _chatCompletionService.GetChatMessageContentAsync(_history, executionSettings, _kernel);
 
-            // Add the AI's response to the chat history.
-            _history.AddAssistantMessage(result.Content!);
+                if (response == null || string.IsNullOrWhiteSpace(response.Content))
+                {
+                    return "⚠️ No valid response generated.";
+                }
 
-            return result.Content!;
+                // ✅ Store response in history for maintaining conversation
+                _history.AddAssistantMessage(response.Content!);
+
+                return response.Content!;
+            }
+            catch (Exception ex)
+            {
+                return $"⚠️ Error processing maintenance request: {ex.Message}";
+            }
         }
     }
 }
